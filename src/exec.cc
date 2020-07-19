@@ -33,6 +33,32 @@ error exec_set(client *c){
 	return NULL;
 }
 
+error exec_mset(client *c){
+	const char **argv = c->args+1;
+	int *argl = c->args_size+1;
+	int argc = c->args_len-1;
+	if (argc<2 || argc%2 != 0){
+		// Must set at least 1 key and each key must have a value.
+		return "wrong number of arguments for 'mset' command";
+	}
+
+	rocksdb::WriteBatch batch;
+	for (int i = 0; i < argc; i += 2) {
+		std::string key(argv[i], argl[i]);
+		std::string value(argv[i+1], argl[i+1]);
+		batch.Put(key, value);
+	}
+
+	rocksdb::WriteOptions write_options;
+	write_options.sync = !nosync;
+	rocksdb::Status s = db->Write(write_options, &batch);
+	if (!s.ok()){
+		err(1, "%s", s.ToString().c_str());
+	}
+	client_write(c, "+OK\r\n", 5);
+	return NULL;
+}
+
 error exec_get(client *c){
 	const char **argv = c->args;
 	int *argl = c->args_size;
@@ -51,6 +77,45 @@ error exec_get(client *c){
 		err(1, "%s", s.ToString().c_str());
 	}
 	client_write_bulk(c, value.data(), value.size());
+	return NULL;
+}
+
+error exec_mget(client *c){
+	const char **argv = c->args+1;
+	int *argl = c->args_size+1;
+	int argc = c->args_len-1;
+	if (argc<1){
+		return "wrong number of arguments for 'mget' command";
+	}
+
+	std::vector<rocksdb::Slice> keys;
+	std::vector<std::string> values;
+
+	keys.reserve(argc);
+	for (int i = 0; i < argc; ++i){
+		keys.push_back(rocksdb::Slice(argv[i], argl[i]));
+	}
+
+	std::vector<rocksdb::Status> statuses = db->MultiGet(rocksdb::ReadOptions(), keys, &values);
+
+	// It's possible only one of the keys failed, in which case the
+	// whole operation should fail.
+	for (int i = 0; i < argc; ++i) {
+		const rocksdb::Status &s = statuses[i];
+		if (s.ok() || s.IsNotFound())
+			continue;
+		err(1, "%s", s.ToString().c_str());
+	}
+
+	client_write_multibulk(c, argc);
+	for (int i = 0; i < argc; ++i) {
+		if (statuses[i].IsNotFound()){
+			client_write(c, "$-1\r\n", 5);
+		}else{
+			const std::string &value = values[i];
+			client_write_bulk(c, value.data(), value.size());
+		}
+	}
 	return NULL;
 }
 
@@ -234,8 +299,12 @@ error exec_command(client *c){
 	}
 	if (iscmd(c, "set")){
 		return exec_set(c);
+	}else if (iscmd(c, "mset")){
+		return exec_mset(c);
 	}else if (iscmd(c, "get")){
 		return exec_get(c);
+	}else if (iscmd(c, "mget")){
+		return exec_mget(c);
 	}else if (iscmd(c, "del")){
 		return exec_del(c);
 	}else if (iscmd(c, "quit")){
