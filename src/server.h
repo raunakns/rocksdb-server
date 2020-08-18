@@ -10,6 +10,7 @@
 
 extern rocksdb::DB* db;
 extern bool nosync;
+extern bool readonly;
 extern int nprocs;
 extern uv_loop_t *loop;
 

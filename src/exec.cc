@@ -1,5 +1,7 @@
 #include "server.h"
 
+static const error ERR_READ_ONLY = "You can't write against a read only replica";
+
 static bool islstr(client *c, int arg_idx, const char *str){
 	int i = 0;
 	for (;i<c->args_size[arg_idx];i++){
@@ -21,6 +23,9 @@ error exec_set(client *c){
 	if (argc!=3){
 		return "wrong number of arguments for 'set' command";
 	}	
+	if (readonly) {
+		return ERR_READ_ONLY;
+	}
 	std::string key(argv[1], argl[1]);
 	std::string value(argv[2], argl[2]);
 	rocksdb::WriteOptions write_options;
@@ -40,6 +45,9 @@ error exec_mset(client *c){
 	if (argc<2 || argc%2 != 0){
 		// Must set at least 1 key and each key must have a value.
 		return "wrong number of arguments for 'mset' command";
+	}
+	if (readonly) {
+		return ERR_READ_ONLY;
 	}
 
 	rocksdb::WriteBatch batch;
@@ -126,6 +134,9 @@ error exec_del(client *c){
 	if (argc!=2){
 		return "wrong number of arguments for 'del' command";
 	}
+	if (readonly) {
+		return "You can't write against a read only replica";
+	}
 	std::string key(argv[1], argl[1]);
 	std::string value; 
 	rocksdb::Status s = db->Get(rocksdb::ReadOptions(), key, &value);
@@ -154,6 +165,9 @@ error exec_quit(client *c){
 error exec_flushdb(client *c){
 	if (c->args_len!=1){
 		return "wrong number of arguments for 'flushdb' command";
+	}
+	if (readonly) {
+		return "You can't write against a read only replica";
 	}
 	flushdb();
 	client_write(c, "+OK\r\n", 5);

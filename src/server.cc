@@ -5,6 +5,7 @@ bool nosync = true;
 int nprocs = 1;
 uv_loop_t *loop = NULL;
 bool inmem = false;
+bool readonly = false;
 const char *dir = "data";
 
 const char *ERR_INCOMPLETE = "incomplete";
@@ -113,7 +114,8 @@ void opendb(){
 	if (inmem){
 		options.env = rocksdb::NewMemEnv(rocksdb::Env::Default());
 	}
-	rocksdb::Status s = rocksdb::DB::Open(options, dir, &db);
+
+	rocksdb::Status s = readonly ? rocksdb::DB::OpenForReadOnly(options, dir, &db) : rocksdb::DB::Open(options, dir, &db);
 	if (!s.ok()){
 		err(1, "%s", s.ToString().c_str());
 	}
@@ -135,7 +137,7 @@ int main(int argc, char **argv) {
 			strcmp(argv[i], "--help")==0||
 			strcmp(argv[i], "-?")==0){
 			fprintf(stdout, "RocksDB version " ROCKSDB_VERSION ", Libuv version " LIBUV_VERSION ", Server version " SERVER_VERSION "\n");
-			fprintf(stdout, "usage: %s [-d data_path] [-p tcp_port] [--sync] [--inmem]\n", argv[0]);
+			fprintf(stdout, "usage: %s [-d data_path] [-p tcp_port] [--sync] [--readonly] [--inmem]\n", argv[0]);
 			return 0;
 		}else if (strcmp(argv[i], "--version")==0){
 			fprintf(stdout, "RocksDB version " ROCKSDB_VERSION ", Libuv version " LIBUV_VERSION ", Server version " SERVER_VERSION "\n");
@@ -150,6 +152,8 @@ int main(int argc, char **argv) {
 			nosync = false;
 		}else if (strcmp(argv[i], "--inmem")==0){
 			inmem = true;
+		}else if (strcmp(argv[i], "--readonly")==0){
+			readonly = true;
 		}else if (strcmp(argv[i], "-p")==0){
 			if (i+1 == argc){
 				fprintf(stderr, "argument missing after: \"%s\"\n", argv[i]);
