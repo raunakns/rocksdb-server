@@ -8,9 +8,6 @@ bool inmem = false;
 bool readonly = false;
 const char *dir = "data";
 
-const char *ERR_INCOMPLETE = "incomplete";
-const char *ERR_QUIT = "quit";
-
 void get_buffer(uv_handle_t *handle, size_t size, uv_buf_t *buf){
 	client *c = (client*)handle;
 	if (c->buf_cap-c->buf_idx-c->buf_len < size){
@@ -32,37 +29,21 @@ void get_buffer(uv_handle_t *handle, size_t size, uv_buf_t *buf){
 
 void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf){
 	client *c = (client*)stream;
+	bool keepalive = true;
 	if (nread < 0) {
-		client_close(c);
-		return;
+		keepalive = false;
+	}else if (nread > 0){
+		c->buf_len += nread;
+		keepalive = client_process_command(c);
 	}
-	c->buf_len += nread;
-	client_clear(c);
-	bool keep_alive = client_exec_commands(c);
-	client_flush_offset(c, c->output_offset);
-	if (!keep_alive){
+
+	if (!keepalive){
 		client_close(c);
 	}
 }
 
-void on_accept_work(uv_work_t *worker) {
-	client *c = (client*)worker->data;
-	uv_tcp_init(loop, &c->tcp);
-	if (uv_accept(c->server, (uv_stream_t *)&c->tcp) == 0) {
-		if (uv_read_start((uv_stream_t *)&c->tcp, get_buffer, on_read)){
-			c->must_close = 1;
-		}
-		// read has started
-	}else{
-		c->must_close = 1;
-	}
-}
-
-void on_accept_work_done(uv_work_t *worker, int status) {
-	client *c = (client*)worker->data;
-	if (c->must_close){
-		client_close(c);
-	}
+int server_enable_reads(client *c) {
+	return uv_read_start((uv_stream_t *)&c->tcp, get_buffer, on_read);
 }
 
 void on_accept(uv_stream_t *server, int status) {
@@ -71,12 +52,10 @@ void on_accept(uv_stream_t *server, int status) {
 	}
 	client *c = client_new();
 	c->server = server;
-	if (0){
-		// future thread-pool stuff, perhaps rip this out
-		uv_queue_work(loop, &c->worker, on_accept_work, on_accept_work_done);
-	}else{
-		on_accept_work(&c->worker);
-		on_accept_work_done(&c->worker, 0);
+
+	uv_tcp_init(loop, &c->tcp);
+	if ((uv_accept(c->server, (uv_stream_t *)&c->tcp) != 0) || (server_enable_reads(c) != 0)){
+		client_close(c);
 	}
 }
 

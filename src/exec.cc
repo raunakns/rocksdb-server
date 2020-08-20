@@ -16,16 +16,17 @@ static bool iscmd(client *c, const char *cmd){
 	return islstr(c, 0, cmd);
 }
 
-error exec_set(client *c){
+static void exec_set(client *c){
 	const char **argv = c->args;
 	int *argl = c->args_size;
 	int argc = c->args_len;
 	if (argc!=3){
-		return "wrong number of arguments for 'set' command";
+		return client_write_error(c, "wrong number of arguments for 'set' command");
 	}	
 	if (readonly) {
-		return ERR_READ_ONLY;
+		return client_write_error(c, ERR_READ_ONLY);
 	}
+
 	std::string key(argv[1], argl[1]);
 	std::string value(argv[2], argl[2]);
 	rocksdb::WriteOptions write_options;
@@ -35,19 +36,18 @@ error exec_set(client *c){
 		err(1, "%s", s.ToString().c_str());
 	}
 	client_write(c, "+OK\r\n", 5);
-	return NULL;
 }
 
-error exec_mset(client *c){
+static void exec_mset(client *c){
 	const char **argv = c->args+1;
 	int *argl = c->args_size+1;
 	int argc = c->args_len-1;
 	if (argc<2 || argc%2 != 0){
 		// Must set at least 1 key and each key must have a value.
-		return "wrong number of arguments for 'mset' command";
+		return client_write_error(c, "wrong number of arguments for 'mset' command");
 	}
 	if (readonly) {
-		return ERR_READ_ONLY;
+		return client_write_error(c, ERR_READ_ONLY);
 	}
 
 	rocksdb::WriteBatch batch;
@@ -64,15 +64,14 @@ error exec_mset(client *c){
 		err(1, "%s", s.ToString().c_str());
 	}
 	client_write(c, "+OK\r\n", 5);
-	return NULL;
 }
 
-error exec_get(client *c){
+static void exec_get(client *c){
 	const char **argv = c->args;
 	int *argl = c->args_size;
 	int argc = c->args_len;
 	if (argc!=2){
-		return "wrong number of arguments for 'get' command";
+		return client_write_error(c, "wrong number of arguments for 'get' command");
 	}	
 	std::string key(argv[1], argl[1]);
 	std::string value;
@@ -80,20 +79,19 @@ error exec_get(client *c){
 	if (!s.ok()){
 		if (s.IsNotFound()){
 			client_write(c, "$-1\r\n", 5);
-			return NULL;
+			return;
 		}
 		err(1, "%s", s.ToString().c_str());
 	}
 	client_write_bulk(c, value.data(), value.size());
-	return NULL;
 }
 
-error exec_mget(client *c){
+static void exec_mget(client *c){
 	const char **argv = c->args+1;
 	int *argl = c->args_size+1;
 	int argc = c->args_len-1;
 	if (argc<1){
-		return "wrong number of arguments for 'mget' command";
+		return client_write_error(c, "wrong number of arguments for 'mget' command");
 	}
 
 	std::vector<rocksdb::Slice> keys;
@@ -124,18 +122,17 @@ error exec_mget(client *c){
 			client_write_bulk(c, value.data(), value.size());
 		}
 	}
-	return NULL;
 }
 
-error exec_del(client *c){
+static void exec_del(client *c){
 	const char **argv = c->args;
 	int *argl = c->args_size;
 	int argc = c->args_len;
 	if (argc!=2){
-		return "wrong number of arguments for 'del' command";
+		return client_write_error(c, "wrong number of arguments for 'del' command");
 	}
 	if (readonly) {
-		return "You can't write against a read only replica";
+		return client_write_error(c, "You can't write against a read only replica");
 	}
 	std::string key(argv[1], argl[1]);
 	std::string value; 
@@ -143,7 +140,7 @@ error exec_del(client *c){
 	if (!s.ok()){
 		if (s.IsNotFound()){
 			client_write(c, ":0\r\n", 4);
-			return NULL;
+			return;
 		}
 		err(1, "%s", s.ToString().c_str());
 	}
@@ -154,27 +151,25 @@ error exec_del(client *c){
 		err(1, "%s", s.ToString().c_str());
 	}
 	client_write(c, ":1\r\n", 4);
-	return NULL;
 }
 
-error exec_quit(client *c){
+static void exec_quit(client *c){
 	client_write(c, "+OK\r\n", 5);
-	return ERR_QUIT;
+	err(1, "quit");
 }
 
-error exec_flushdb(client *c){
+static void exec_flushdb(client *c){
 	if (c->args_len!=1){
-		return "wrong number of arguments for 'flushdb' command";
+		return client_write_error(c, "wrong number of arguments for 'flushdb' command");
 	}
 	if (readonly) {
-		return "You can't write against a read only replica";
+		return client_write_error(c, "You can't write against a read only replica");
 	}
 	flushdb();
 	client_write(c, "+OK\r\n", 5);
-	return NULL;
 }
 
-static error exec_scan_keys(client *c, 
+static void exec_scan_keys(client *c,
 		bool scan,
 		const char *pat, int pat_len, 
 		int cursor, int count
@@ -254,29 +249,28 @@ static error exec_scan_keys(client *c,
 	int nbn = strlen(nb);
 	memcpy(c->output+filler-nbn, nb, nbn);
 	c->output_offset = filler-nbn;
-
-	return NULL;
 }
 
-error exec_keys(client *c){
+static void exec_keys(client *c){
 	const char **argv = c->args;
 	int *argl = c->args_size;
 	int argc = c->args_len;
 	if (argc!=2){
-		return "wrong number of arguments for 'keys' command";
+		return client_write_error(c, "wrong number of arguments for 'keys' command");
 	}
-	return exec_scan_keys(c, false, argv[1], argl[1], -1, -1);
+	exec_scan_keys(c, false, argv[1], argl[1], -1, -1);
 }
-error exec_scan(client *c){
+
+static void exec_scan(client *c){
 	const char **argv = c->args;
 	int *argl = c->args_size;
 	int argc = c->args_len;
 	if (argc<2){
-		return "wrong number of arguments for 'scan' command";
+		return client_write_error(c, "wrong number of arguments for 'scan' command");
 	}
 	int cursor = atop(argv[1], argl[1]);
 	if (cursor < 0){
-		return "invalid cursor";
+		return client_write_error(c, "invalid cursor");
 	}
 	int count = -1;
 	const char *pat = "*";
@@ -286,50 +280,57 @@ error exec_scan(client *c){
 		if (islstr(c, i, "match")){
 			i++;
 			if (i==argc){
-				return "syntax error";
+				return client_write_error(c, "syntax error");
 			}
 			pat = argv[i];
 			pat_len = argl[i];
 		}else if (islstr(c, i, "count")){
 			i++;
 			if (i==argc){
-				return "syntax error";
+				return client_write_error(c, "syntax error");
 			}
 			count = atop(argv[i], argl[i]);
 			if (count < 0){
-				return "value is not an integer or out of range";
+				return client_write_error(c, "value is not an integer or out of range");
 			}
 		}else{
-			return "syntax error";
+			return client_write_error(c, "syntax error");
 		}
 	}
 	return exec_scan_keys(c, true, pat, pat_len, cursor, count);
 }
 
 
-error exec_command(client *c){
-	if (c->args_len==0||(c->args_len==1&&c->args_size[0]==0)){
-		return NULL;
+static const struct {
+	const char *name;
+	command_t command;
+} commands[] = {
+	{ "del",     &exec_del },
+	{ "flushdb", &exec_flushdb },
+	{ "get",     &exec_get },
+	{ "mset",    &exec_mset },
+	{ "mget",    &exec_mget },
+	{ "quit",    &exec_quit },
+	{ "scan",    &exec_scan },
+	{ "set",     &exec_set },
+};
+
+void exec_command(client *c){
+	command_t command = NULL;
+
+	// TODO: use bsearch to find command
+	for (size_t i = 0; i < sizeof(commands)/sizeof(*commands); i += 1){
+		if (iscmd(c, commands[i].name)){
+			command = commands[i].command;
+			break;
+		}
 	}
-	if (iscmd(c, "set")){
-		return exec_set(c);
-	}else if (iscmd(c, "mset")){
-		return exec_mset(c);
-	}else if (iscmd(c, "get")){
-		return exec_get(c);
-	}else if (iscmd(c, "mget")){
-		return exec_mget(c);
-	}else if (iscmd(c, "del")){
-		return exec_del(c);
-	}else if (iscmd(c, "quit")){
-		return exec_quit(c);
-	}else if (iscmd(c, "keys")){
-		return exec_keys(c);
-	}else if (iscmd(c, "scan")){
-		return exec_scan(c);
-	}else if (iscmd(c, "flushdb")){
-		return exec_flushdb(c);
+
+	if (command){
+		client_dispatch_command(c, command);
+	}else{
+		client_write_error(c, client_err_unknown_command(c, c->args[0], c->args_size[0]));
+		client_flush(c);
 	}
-	return client_err_unknown_command(c, c->args[0], c->args_size[0]);
 }
 

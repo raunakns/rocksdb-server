@@ -38,6 +38,7 @@ void on_close(uv_handle_t *stream){
 void client_close(client *c){
 	uv_close((uv_handle_t *)&c->tcp, on_close);
 }
+
 inline void client_output_require(client *c, size_t siz){
 	if (c->output_cap < siz){
 		while (c->output_cap < siz){
@@ -53,6 +54,7 @@ inline void client_output_require(client *c, size_t siz){
 		}
 	}
 }
+
 void client_write(client *c, const char *data, int n){
 	client_output_require(c, c->output_len+n);
 	memcpy(c->output+c->output_len, data, n);	
@@ -98,20 +100,53 @@ void client_write_error(client *c, error err){
 }
 
 
-void client_flush_offset(client *c, int offset){
-	if (c->output_len-offset <= 0){
-		return;
+static void on_write_done(uv_write_t *req, int status){
+	uv_stream_t *const stream = req->handle;
+	client *const c = (client*)stream;
+	bool keepalive = true;
+	if (status < 0){
+		// Error writing, such as closed remote end.
+		keepalive = false;
+	}else{
+		// Finished writing response, at this point, reads are still
+		// disabled. The client may have pipelined requests, so
+		// process any remaining bytes in the input buffer. If there
+		// are insufficient number, reads will be re-enabled.
+		keepalive = client_process_command(c);
 	}
-	uv_buf_t buf = {0};
-	buf.base = c->output+offset;
-	buf.len = c->output_len-offset;
-	uv_write(&c->req, (uv_stream_t *)&c->tcp, &buf, 1, NULL);
+
+	if (!keepalive){
+		client_close(c);
+	}
+}
+
+static void on_last_write_done(uv_write_t *req, int status){
+	uv_stream_t *const stream = req->handle;
+	client *const c = (client*)stream;
+	client_close(c);
+}
+
+// Returns:
+//   true - data was flushed
+//   false - no data was flushed
+static bool client_flush_impl(client *c, int offset, uv_write_cb cb){
+	if (c->output_len-offset <= 0){
+		return false;
+	}
+	uv_buf_t buf = uv_buf_init(c->output+offset, c->output_len-offset);
+	c->output_offset = 0;
 	c->output_len = 0;
+	uv_write(&c->req, (uv_stream_t *)&c->tcp, &buf, 1, cb);
+	return true;
+}
+
+void client_flush_offset(client *c, int offset){
+	client_flush_impl(c, offset, &on_write_done);
 }
 
 
 void client_flush(client *c){
-	client_flush_offset(c, 0);
+	client_flush_impl(c, c->output_offset, &on_write_done);
 }
 
 void client_err_alloc(client *c, int n){
@@ -139,6 +174,7 @@ error client_err_unknown_command(client *c, const char *name, int count){
 	strcat(c->tmp_err, "'");
 	return c->tmp_err;
 }
+
 void client_append_arg(client *c, const char *data, int nbyte){
 	if (c->args_cap==c->args_len){
 		if (c->args_cap==0){
@@ -160,11 +196,16 @@ void client_append_arg(client *c, const char *data, int nbyte){
 	c->args_len++;
 }
 
-error client_parse_telnet_command(client *c){
+// Parse and consume a command formatted using the telnet protocol.
+// Returns:
+//   > 0: Consumed a whole command (stored in client)
+//   < 0: Encountered fatal parsing error
+//   = 0: Consumed part of a command (in client), but need more data
+static int client_parse_telnet_command(client *c){
 	size_t i = c->buf_idx;
 	size_t z = c->buf_len+c->buf_idx;
 	if (i >= z){
-		return ERR_INCOMPLETE;
+		return 0;
 	}
 	c->args_len = 0;
 	size_t s = i;
@@ -172,7 +213,8 @@ error client_parse_telnet_command(client *c){
 	for (;i<z;i++){
 		if (c->buf[i]=='\'' || c->buf[i]=='\"'){
 			if (!first){
-				return "Protocol error: unbalanced quotes in request";
+				client_write_error(c, "Protocol error: unbalanced quotes in request");
+				return -1;
 			}
 			char b = c->buf[i];
 			i++;
@@ -183,7 +225,8 @@ error client_parse_telnet_command(client *c){
 						client_append_arg(c, c->buf+s, i-s);
 						i--;
 					}else{
-						return "Protocol error: unbalanced quotes in request";
+						client_write_error(c, "Protocol error: unbalanced quotes in request");
+						return -1;
 					}
 					break;
 				}
@@ -208,7 +251,7 @@ error client_parse_telnet_command(client *c){
 			}else{
 				c->buf_idx = i;
 			}
-			return NULL;
+			return 1;
 		}
 		if (c->buf[i] == ' '){
 			if (!first){
@@ -222,15 +265,20 @@ error client_parse_telnet_command(client *c){
 			}
 		}
 	}
-	return ERR_INCOMPLETE;
+	return 0;
 }
 
-error client_read_command(client *c){
+// Parse and consume a command in the bytes received.
+// Returns:
+//   > 0: Consumed a whole command (stored in client)
+//   < 0: Encountered fatal parsing error
+//   = 0: Consumed part of a command (in client), but need more data
+static int client_parse_command(client *c){
 	c->args_len = 0;
 	size_t i = c->buf_idx;
 	size_t z = c->buf_idx+c->buf_len;
 	if (i >= z){
-		return ERR_INCOMPLETE;
+		return 0;
 	}
 	if (c->buf[i] != '*'){
 		return client_parse_telnet_command(c);
@@ -241,14 +289,16 @@ error client_read_command(client *c){
 	for (;i < z;i++){
 		if (c->buf[i]=='\n'){
 			if (c->buf[i-1] !='\r'){
-				return "Protocol error: invalid multibulk length";
+				client_write_error(c, "Protocol error: invalid multibulk length");
+				return -1;
 			}
 			c->buf[i-1] = 0;
 			args_len = atoi(c->buf+s);
 			c->buf[i-1] = '\r';
 			if (args_len <= 0){
 				if (args_len < 0 || i-s != 2){
-					return "Protocol error: invalid multibulk length";
+					client_write_error(c, "Protocol error: invalid multibulk length");
+					return -1;
 				}
 			}
 			i++;
@@ -256,14 +306,15 @@ error client_read_command(client *c){
 		}
 	}
 	if (i >= z){
-		return ERR_INCOMPLETE;
+		return 0;
 	}
 	for (int j=0;j<args_len;j++){
 		if (i >= z){
-			return ERR_INCOMPLETE;
+			return 0;
 		}
 		if (c->buf[i] != '$'){
-			return client_err_expected_got(c, '$', c->buf[i]);
+			client_write_error(c, client_err_expected_got(c, '$', c->buf[i]));
+			return -1;
 		}
 		i++;
 		int nsiz = 0;
@@ -271,26 +322,30 @@ error client_read_command(client *c){
 		for (;i < z;i++){
 			if (c->buf[i]=='\n'){
 				if (c->buf[i-1] !='\r'){
-					return "Protocol error: invalid bulk length";
+					client_write_error(c, "Protocol error: invalid bulk length");
+					return -1;
 				}
 				c->buf[i-1] = 0;
 				nsiz = atoi(c->buf+s);
 				c->buf[i-1] = '\r';
 				if (nsiz <= 0){
 					if (nsiz < 0 || i-s != 2){
-						return "Protocol error: invalid bulk length";
+						client_write_error(c, "Protocol error: invalid bulk length");
+						return -1;
 					}
 				}
 				i++;
 				if (z-i < nsiz+2){
-					return ERR_INCOMPLETE;
+					return 0;
 				}
 				s = i;
 				if (c->buf[s+nsiz] != '\r'){
-					return "Protocol error: invalid bulk data";
+					client_write_error(c, "Protocol error: invalid bulk data");
+					return -1;
 				}
 				if (c->buf[s+nsiz+1] != '\n'){
-					return "Protocol error: invalid bulk data";
+					client_write_error(c, "Protocol error: invalid bulk data");
+					return -1;
 				}
 				client_append_arg(c, c->buf+s, nsiz);
 				i += nsiz+2;
@@ -304,7 +359,72 @@ error client_read_command(client *c){
 	}else{
 		c->buf_idx = i;
 	}
-	return NULL;
+
+	return 1;
+}
+
+bool client_process_command(client *c){
+	int r = client_parse_command(c);
+	bool keepalive;
+
+	if (r > 0){
+		// A dispatched command run in a worker pool. To prevent more
+		// commands from being processed while this one is outstanding,
+		// disable reads from the stream. It will be re-enabled when
+		// the response is written back out.
+		uv_read_stop((uv_stream_t *)&c->tcp);
+		client_clear(c);
+		exec_command(c);
+		keepalive = true;
+	}else if (r == 0){
+		// Need more bytes to finish parsing the command.
+		keepalive = server_enable_reads(c) == 0;
+	}else{
+		// Errors related to the structure of the message are hard (if not
+		// impossible) to recover from, since message boundaries have been
+		// lost. Stop reading so we don't spin our wheels consuming
+		// data, flush any error messages written to the socket,
+		// and mark the connection for closing (which will be closed
+		// when write finishes).
+		uv_read_stop((uv_stream_t *)&c->tcp);
+		keepalive = client_flush_impl(c, c->output_offset, &on_last_write_done);
+	}
+	return keepalive;
+}
+
+static void on_command(uv_work_t *req){
+	// Execute the command (in a worker pool)
+	client *c = (client *)req->data;
+	const command_t command = c->on_command;
+	c->on_command = NULL;
+	return command(c);
+}
+
+static void on_command_done(uv_work_t *req, int status){
+	// Called in the main loop when the command is done executing.
+	// At this point, it's safe to flush any data queued up to write to
+	// the client.
+	client *c = (client *)req->data;
+	if (status!=0){
+		client_close(c);
+	}else{
+		client_flush(c);
+	}
+}
+
+void client_dispatch_command(client *c, command_t command){
+	c->on_command = command;
+	if (inmem){
+		// Everything is in memory, so there is no blocking I/O
+		// to worry about; handle the request in the main loop.
+		on_command(&c->worker);
+		on_command_done(&c->worker, 0);
+	}else{
+		// Commands are executed in a worker pool to free the main loop
+		// to process other connections.
+		uv_loop_t *loop = c->tcp.loop;
+		uv_queue_work(loop, &c->worker, on_command, on_command_done);
+	}
 }
 
 void client_print_args(client *c){
@@ -317,26 +437,4 @@ void client_print_args(client *c){
 		printf("]");
 	}
 	printf("\n");
-}
-
-bool client_exec_commands(client *c){
-	for (;;){
-		error err = client_read_command(c);
-		if (err != NULL){
-			if ((char*)err == (char*)ERR_INCOMPLETE){
-				return true;
-			}
-			client_write_error(c, err);
-			return false;
-		}
-		err = exec_command(c);
-		if (err != NULL){
-			if (err == ERR_QUIT){
-				return false;
-			}
-			client_write_error(c, err);
-			return true;
-		}
-	}
-	return true;
 }
