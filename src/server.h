@@ -1,4 +1,5 @@
 #ifndef SERVER_H
+#define SERVER_H
 
 #include <unistd.h>
 #include <stdio.h>
@@ -18,6 +19,7 @@ extern uv_loop_t *loop;
 extern const char *ERR_INCOMPLETE;
 extern const char *ERR_QUIT;
 
+int log_init(uv_loop_t *loop, int fd);
 void log(char c, const char *format, ...);
 
 int stringmatchlen(const char *pattern, int patternLen,

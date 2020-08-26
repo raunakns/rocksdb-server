@@ -13,7 +13,7 @@ all: 3rdparty/rocksdb-$(ROCKSDB_VERSION)/librocksdb.a \
 		-I3rdparty/libuv-$(LIBUV_VERSION)/build/include/ \
 		-pthread -ldl -lbz2 -lz -lsnappy \
 		-o rocksdb-server \
-		src/server.cc src/client.cc src/exec.cc src/match.cc src/util.cc \
+		src/server.cc src/client.cc src/exec.cc src/logging.cc src/match.cc src/util.cc \
 		$^
 clean:
 	rm -f rocksdb-server

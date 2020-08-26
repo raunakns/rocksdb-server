@@ -59,34 +59,6 @@ void on_accept(uv_stream_t *server, int status) {
 	}
 }
 
-void log(char c, const char *format, ...){
-	time_t rawtime;
-	struct tm *info;
-	char tbuf[32];
-	struct timespec spec;
-    clock_gettime(CLOCK_REALTIME, &spec);
-	rawtime = spec.tv_sec;	
-	info = localtime( &rawtime );
-	strftime(tbuf,sizeof(tbuf),"%d %b %H:%M:%S", info);
-	char buffer[512];
-	va_list args;
-	va_start(args, format);
-	vsnprintf(buffer,sizeof(buffer),format, args);
-	char cc[32];
-	if (isatty(1)){
-		switch (c) {
-		default: cc[0] = c; cc[1] = 0; 
-		case '.': strcpy(cc, "\x1b[35m.\x1b[0m"); break;
-		case '*': strcpy(cc, "\x1b[1m*\x1b[0m"); break;
-		case '#': strcpy(cc, "\x1b[33m#\x1b[0m"); break;
-		}
-	}else{
-		cc[0] = c; cc[1] = 0;
-	}
-	fprintf(stderr, "%d:M %s.%d %s %s\n", getpid(), tbuf, ((int)(spec.tv_nsec/1.0e6))%1000, cc, buffer);
-	va_end(args);
-}
-
 void opendb(){
 	rocksdb::Options options;
 	options.create_if_missing = true;
@@ -149,11 +121,13 @@ int main(int argc, char **argv) {
 			return 1;
 		}
 	}
+	loop = uv_default_loop();
+	log_init(loop, STDERR_FILENO);
+
 	log('#', "Server started, RocksDB version " ROCKSDB_VERSION ", Libuv version " LIBUV_VERSION ", Server version " SERVER_VERSION);
 	opendb();
 
 	uv_tcp_t server;
-	loop = uv_default_loop();
 
 	struct sockaddr_in addr;
 	uv_ip4_addr("0.0.0.0", tcp_port, &addr);
