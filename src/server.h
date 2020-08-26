@@ -42,6 +42,7 @@ struct client_t {
 	uv_write_t req;
 	uv_work_t worker;
 	uv_stream_t *server;
+	char peer[1 + INET6_ADDRSTRLEN + 1 + 1 + 5 + 1]; // "[IP]:port"
 	char *buf;
 	int buf_cap;
 	int buf_len;

@@ -32,6 +32,8 @@ void client_free(client *c){
 }
 
 void on_close(uv_handle_t *stream){
+	client *c = (client *)stream;
+	log('.', "%s: closed connection", c->peer);
 	client_free((client*)stream);
 }
 
@@ -365,7 +367,7 @@ static int client_parse_command(client *c){
 
 bool client_process_command(client *c){
 	int r = client_parse_command(c);
-	bool keepalive;
+	bool keepalive = true;
 
 	if (r > 0){
 		// A dispatched command run in a worker pool. To prevent more
@@ -375,10 +377,12 @@ bool client_process_command(client *c){
 		uv_read_stop((uv_stream_t *)&c->tcp);
 		client_clear(c);
 		exec_command(c);
-		keepalive = true;
 	}else if (r == 0){
 		// Need more bytes to finish parsing the command.
-		keepalive = server_enable_reads(c) == 0;
+		if ((r = server_enable_reads(c)) < 0){
+			log('.', "%s: error enabling reads: %s", c->peer, uv_strerror(r));
+			keepalive = false;
+		}
 	}else{
 		// Errors related to the structure of the message are hard (if not
 		// impossible) to recover from, since message boundaries have been
@@ -386,6 +390,7 @@ bool client_process_command(client *c){
 		// data, flush any error messages written to the socket,
 		// and mark the connection for closing (which will be closed
 		// when write finishes).
+		log('.', "%s: encountered malformed request", c->peer);
 		uv_read_stop((uv_stream_t *)&c->tcp);
 		keepalive = client_flush_impl(c, c->output_offset, &on_last_write_done);
 	}

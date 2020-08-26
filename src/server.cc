@@ -8,6 +8,33 @@ bool inmem = false;
 bool readonly = false;
 const char *dir = "data";
 
+
+static void get_peer_name(char *buf, size_t buf_len, uv_tcp_t *tcp){
+	struct sockaddr_storage addr;
+	int addr_len = sizeof(addr);
+	int ofs = 0;
+
+	uv_tcp_getpeername(tcp, (struct sockaddr*)&addr, &addr_len);
+	switch (addr.ss_family){
+	case AF_INET:
+		uv_inet_ntop(AF_INET, &((struct sockaddr_in *)&addr)->sin_addr, buf+ofs, buf_len-ofs);
+		ofs += strlen(buf);
+		snprintf(buf+ofs, buf_len-ofs, ":%hu", ntohs(((struct sockaddr_in *)&addr)->sin_port));
+		return;
+	case AF_INET6:
+		if (buf_len-ofs < 4){
+			// Can't even fit in "[0]"
+			break;
+		}
+		buf[ofs++] = '[';
+		uv_inet_ntop(AF_INET6, &((struct sockaddr_in6 *)&addr)->sin6_addr, buf+ofs, buf_len-ofs-1);
+		ofs += strlen(buf);
+		snprintf(buf+ofs, buf_len-ofs, "]:%hu", ntohs(((struct sockaddr_in6 *)&addr)->sin6_port));
+		return;
+	}
+	snprintf(buf, buf_len, "[unknown]");
+}
+
 void get_buffer(uv_handle_t *handle, size_t size, uv_buf_t *buf){
 	client *c = (client*)handle;
 	if (c->buf_cap-c->buf_idx-c->buf_len < size){
@@ -31,6 +58,9 @@ void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf){
 	client *c = (client*)stream;
 	bool keepalive = true;
 	if (nread < 0) {
+		if (nread != UV_EOF){
+			log('.', "%s: error reading: %s", c->peer, uv_strerror(nread));
+		}
 		keepalive = false;
 	}else if (nread > 0){
 		c->buf_len += nread;
@@ -47,15 +77,27 @@ int server_enable_reads(client *c) {
 }
 
 void on_accept(uv_stream_t *server, int status) {
-	if (status == -1) {
+	if (status < 0) {
+		log('.', "error accepting connection: %s", uv_strerror(status));
 		return;
 	}
+
 	client *c = client_new();
 	c->server = server;
 
-	uv_tcp_init(loop, &c->tcp);
-	if ((uv_accept(c->server, (uv_stream_t *)&c->tcp) != 0) || (server_enable_reads(c) != 0)){
+	uv_tcp_init(server->loop, &c->tcp);
+	if ((status = uv_accept(c->server, (uv_stream_t *)&c->tcp)) < 0){
+		log('.', "error accepting connection: %s", uv_strerror(status));
+		client_free(c);
+		return;
+	}
+	get_peer_name(c->peer, sizeof(c->peer), &c->tcp);
+
+	log('.', "%s: accepted new connection", c->peer);
+	if ((status = server_enable_reads(c)) < 0){
+		log('.', "%s: error enabling reads: %s", c->peer, uv_strerror(status));
 		client_close(c);
+		return;
 	}
 }
 
