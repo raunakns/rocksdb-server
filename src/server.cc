@@ -3,6 +3,7 @@
 rocksdb::DB* db = NULL;
 bool nosync = true;
 int nprocs = 1;
+int tcp_keepalive = 60;
 uv_loop_t *loop = NULL;
 bool inmem = false;
 bool readonly = false;
@@ -93,6 +94,12 @@ void on_accept(uv_stream_t *server, int status) {
 	}
 	get_peer_name(c->peer, sizeof(c->peer), &c->tcp);
 
+	if ((status = uv_tcp_keepalive(&c->tcp, tcp_keepalive > 0, tcp_keepalive)) < 0){
+		log('.', "%s: error setting keepalive: %s", c->peer, uv_strerror(status));
+		client_close(c);
+		return;
+	}
+
 	log('.', "%s: accepted new connection", c->peer);
 	if ((status = server_enable_reads(c)) < 0){
 		log('.', "%s: error enabling reads: %s", c->peer, uv_strerror(status));
@@ -130,7 +137,7 @@ int main(int argc, char **argv) {
 			strcmp(argv[i], "--help")==0||
 			strcmp(argv[i], "-?")==0){
 			fprintf(stdout, "RocksDB version " ROCKSDB_VERSION ", Libuv version " LIBUV_VERSION ", Server version " SERVER_VERSION "\n");
-			fprintf(stdout, "usage: %s [-d data_path] [-p tcp_port] [--sync] [--readonly] [--inmem]\n", argv[0]);
+			fprintf(stdout, "usage: %s [-d data_path] [-p tcp_port] [--sync] [--readonly] [--inmem] [--keepalive seconds]\n", argv[0]);
 			return 0;
 		}else if (strcmp(argv[i], "--version")==0){
 			fprintf(stdout, "RocksDB version " ROCKSDB_VERSION ", Libuv version " LIBUV_VERSION ", Server version " SERVER_VERSION "\n");
@@ -155,9 +162,32 @@ int main(int argc, char **argv) {
 			tcp_port = atoi(argv[i+1]);
 			if (!tcp_port){
 				fprintf(stderr, "invalid option '%s' for argument: \"%s\"\n", argv[i+1], argv[i]);
+				return 1;
 			}
 			i++;
 			tcp_port_provided = true;
+		}else if (strcmp(argv[i], "--keepalive")==0){
+			if (i+1 == argc){
+				fprintf(stderr, "argument missing after %s\n", argv[i]);
+				return 1;
+			}
+			char *endp;
+			long val;
+
+			errno = 0;
+			val = strtol(argv[i+1], &endp, 0);
+			if (errno != 0 || *endp != '\0'){
+				fprintf(stderr, "invalid option for %s: \"%s\" not a number\n", argv[i], argv[i+1]);
+				return 1;
+
+			}
+			if (val < 0 || val > INT_MAX){
+				fprintf(stderr, "invalid option for %s: %ld out of range\n", argv[i], val);
+				return 1;
+			}
+
+			tcp_keepalive = (int)val;
+			i++;
 		}else{
 			fprintf(stderr, "unknown option argument: \"%s\"\n", argv[i]);
 			return 1;

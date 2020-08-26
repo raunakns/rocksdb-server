@@ -14,6 +14,7 @@ extern bool inmem;
 extern bool nosync;
 extern bool readonly;
 extern int nprocs;
+extern int tcp_keepalive;
 extern uv_loop_t *loop;
 
 extern const char *ERR_INCOMPLETE;
