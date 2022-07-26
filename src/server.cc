@@ -113,6 +113,11 @@ void opendb(){
 	options.create_if_missing = true;
 	// disable compression for cpu performance
 	options.compression = rocksdb::CompressionType::kNoCompression;
+	// increase size of block cache
+	rocksdb::BlockBasedTableOptions table_options;
+	table_options.block_cache = rocksdb::NewLRUCache(2 * 1024 * 1024 * 1024LL);
+	rocksdb::Options options;
+	options.table_factory.reset(new rocksdb::BlockBasedTableFactory(table_options));
 	if (inmem){
 		options.env = rocksdb::NewMemEnv(rocksdb::Env::Default());
 	}
