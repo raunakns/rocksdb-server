@@ -111,6 +111,8 @@ void on_accept(uv_stream_t *server, int status) {
 void opendb(){
 	rocksdb::Options options;
 	options.create_if_missing = true;
+	// disable compression for cpu performance
+	options.compression = rocksdb::CompressionType::kNoCompression;
 	if (inmem){
 		options.env = rocksdb::NewMemEnv(rocksdb::Env::Default());
 	}
